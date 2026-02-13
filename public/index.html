@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jira Worklogs</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <div class="mx-auto max-w-3xl px-6 py-10">
+    <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <h1 class="text-2xl font-semibold tracking-tight">Jira Worklogs</h1>
+          <p class="mt-1 text-sm text-slate-600">Select a date range and fetch your worklog totals.</p>
+        </div>
+        <div class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-500">Tailwind UI</div>
+      </div>
+
+      <form id="form" class="mt-6 grid gap-4 sm:grid-cols-2">
+        <div>
+          <label for="from" class="block text-xs font-medium text-slate-600">From</label>
+          <input id="from" name="from" type="date" required class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:outline-none" />
+        </div>
+        <div>
+          <label for="to" class="block text-xs font-medium text-slate-600">To</label>
+          <input id="to" name="to" type="date" required class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:outline-none" />
+        </div>
+        <div>
+          <label for="project" class="block text-xs font-medium text-slate-600">Project key (optional)</label>
+          <input id="project" name="project" type="text" placeholder="PT" class="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-slate-400 focus:outline-none" />
+        </div>
+        <div class="flex items-center gap-2 pt-6">
+          <input id="perIssue" name="perIssue" type="checkbox" checked class="h-4 w-4 rounded border-slate-300 text-slate-900" />
+          <label for="perIssue" class="text-sm text-slate-700">Show per-issue breakdown</label>
+        </div>
+        <div class="sm:col-span-2">
+          <button type="submit" class="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800">Fetch</button>
+        </div>
+      </form>
+
+      <div class="mt-6">
+        <div class="text-xs text-slate-500">Result</div>
+        <div id="result" class="mt-2 min-h-[110px] rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-800">Ready.</div>
+        <div id="meta" class="mt-2 text-xs text-slate-500"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const form = document.getElementById("form");
+    const result = document.getElementById("result");
+    const meta = document.getElementById("meta");
+
+    function isoDate(d) {
+      return d.toISOString().slice(0, 10);
+    }
+
+    const today = new Date();
+    const defaultTo = isoDate(today);
+    const defaultFrom = isoDate(new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000));
+    document.getElementById("from").value = defaultFrom;
+    document.getElementById("to").value = defaultTo;
+
+    let jiraBase = "";
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((cfg) => {
+        jiraBase = String(cfg.jiraBase || "");
+      })
+      .catch(() => {
+        jiraBase = "";
+      });
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function formatOutputHtml(data, perIssue) {
+      const parts = [];
+      parts.push(
+        "<div>Range: " +
+          escapeHtml(data.range.from) +
+          " .. " +
+          escapeHtml(data.range.to) +
+          "</div>"
+      );
+      parts.push(
+        "<div>Issues matched by JQL: " +
+          escapeHtml(data.issueCount) +
+          "</div>"
+      );
+      parts.push(
+        "<div>Total: " +
+          escapeHtml(data.totalSeconds) +
+          " seconds (" +
+          escapeHtml(data.totalHours) +
+          " hours)</div>"
+      );
+
+      if (perIssue) {
+        parts.push("<div class=\"mt-3 font-medium\">Per issue:</div>");
+        if (!data.perIssue || data.perIssue.length === 0) {
+          parts.push("<div>- none</div>");
+        } else {
+          const items = data.perIssue
+            .map((item) => {
+              const key = String(item.key || "");
+              const href = jiraBase ? jiraBase + "/browse/" + key : "#";
+              return (
+                "<li>" +
+                "<a class=\"underline\" href=\"" +
+                escapeHtml(href) +
+                "\" target=\"_blank\" rel=\"noopener noreferrer\">" +
+                escapeHtml(key) +
+                "</a>: " +
+                escapeHtml(item.hours) +
+                "h</li>"
+              );
+            })
+            .join("");
+          parts.push("<ul class=\"mt-1 list-disc pl-5\">" + items + "</ul>");
+        }
+      }
+
+      return parts.join("");
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      result.textContent = "Loading...";
+      meta.textContent = "";
+
+      const from = document.getElementById("from").value;
+      const to = document.getElementById("to").value;
+      const project = document.getElementById("project").value.trim();
+      const perIssue = document.getElementById("perIssue").checked;
+
+      const params = new URLSearchParams({ from, to });
+      if (project) params.set("project", project);
+      if (perIssue) params.set("perIssue", "1");
+
+      try {
+        const res = await fetch("/api/worklogs?" + params.toString());
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data?.error || "Request failed");
+        }
+        result.innerHTML = formatOutputHtml(data, perIssue);
+        meta.textContent = "Fetched at " + new Date().toLocaleTimeString();
+      } catch (err) {
+        result.textContent = "Error: " + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
