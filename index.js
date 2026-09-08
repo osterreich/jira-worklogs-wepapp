@@ -36,7 +36,7 @@ async function getMyAccountId() {
 }
 
 async function searchIssuesByJql(jql) {
-  const keys = [];
+  const issues = [];
   const maxResults = 100;
   let nextPageToken = null;
 
@@ -44,14 +44,19 @@ async function searchIssuesByJql(jql) {
     const body = {
       jql,
       maxResults,
-      fields: [],
+      fields: ["summary"],
     };
     if (nextPageToken) body.nextPageToken = nextPageToken;
 
     const res = await api.post("/rest/api/3/search/jql", body);
 
-    const issues = res.data.issues || [];
-    for (const i of issues) keys.push(i.key);
+    const batch = res.data.issues || [];
+    for (const issue of batch) {
+      issues.push({
+        key: issue.key,
+        name: issue.fields?.summary || issue.key,
+      });
+    }
 
     const isLast = res.data.isLast === true;
     nextPageToken = res.data.nextPageToken || null;
@@ -60,7 +65,7 @@ async function searchIssuesByJql(jql) {
     if (!nextPageToken) break;
   }
 
-  return keys;
+  return issues;
 }
 
 async function fetchAllWorklogs(issueKey) {
@@ -95,13 +100,22 @@ async function computeWorklogSummary({ dateFrom, dateTo, projectKey }) {
     `${projectPart}worklogAuthor = currentUser() ` +
     `AND worklogDate >= "${dateFrom}" AND worklogDate <= "${dateTo}"`;
 
-  const issueKeys = await searchIssuesByJql(jql);
+  const issues = await searchIssuesByJql(jql);
 
   let totalSeconds = 0;
   const perIssue = new Map();
+  const dailySeconds = new Map();
 
-  for (const key of issueKeys) {
-    const wls = await fetchAllWorklogs(key);
+  for (
+    let day = new Date(`${dateFrom}T00:00:00.000Z`);
+    day <= new Date(`${dateTo}T00:00:00.000Z`);
+    day = new Date(day.getTime() + 24 * 60 * 60 * 1000)
+  ) {
+    dailySeconds.set(day.toISOString().slice(0, 10), 0);
+  }
+
+  for (const issue of issues) {
+    const wls = await fetchAllWorklogs(issue.key);
 
     for (const w of wls) {
       if (w?.author?.accountId !== myId) continue;
@@ -112,31 +126,57 @@ async function computeWorklogSummary({ dateFrom, dateTo, projectKey }) {
       if (startedMs >= from && startedMs <= to) {
         const secs = Number(w.timeSpentSeconds || 0);
         totalSeconds += secs;
-        perIssue.set(key, (perIssue.get(key) || 0) + secs);
+        const date = new Date(startedMs).toISOString().slice(0, 10);
+        dailySeconds.set(date, (dailySeconds.get(date) || 0) + secs);
+
+        const current = perIssue.get(issue.key) || {
+          key: issue.key,
+          name: issue.name,
+          seconds: 0,
+        };
+        current.seconds += secs;
+        perIssue.set(issue.key, current);
       }
     }
   }
 
   const perIssueSorted = [...perIssue.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, seconds]) => ({
-      key,
+    .map(([, item]) => ({
+      ...item,
+      hours: Number((item.seconds / 3600).toFixed(2)),
+    }))
+    .sort((a, b) =>
+      a.key.localeCompare(b.key, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
+
+  const perDay = [...dailySeconds.entries()]
+    .filter(([, seconds]) => seconds > 0)
+    .map(([date, seconds]) => ({
+      date,
       seconds,
       hours: Number((seconds / 3600).toFixed(2)),
     }));
 
   return {
     range: { from: dateFrom, to: dateTo },
-    issueCount: issueKeys.length,
+    issueCount: issues.length,
     totalSeconds,
     totalHours: Number((totalSeconds / 3600).toFixed(2)),
+    perDay,
     perIssue: perIssueSorted,
   };
 }
 
 const app = express();
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 3010);
 
+app.use(
+  "/vendor/chart.js",
+  express.static("node_modules/chart.js/dist")
+);
 app.use(express.static("public"));
 
 app.get("/api/config", (req, res) => {
