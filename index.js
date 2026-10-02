@@ -105,6 +105,7 @@ async function computeWorklogSummary({ dateFrom, dateTo, projectKey }) {
   let totalSeconds = 0;
   const perIssue = new Map();
   const dailySeconds = new Map();
+  const worklogEntries = [];
 
   for (
     let day = new Date(`${dateFrom}T00:00:00.000Z`);
@@ -128,6 +129,14 @@ async function computeWorklogSummary({ dateFrom, dateTo, projectKey }) {
         totalSeconds += secs;
         const date = new Date(startedMs).toISOString().slice(0, 10);
         dailySeconds.set(date, (dailySeconds.get(date) || 0) + secs);
+        worklogEntries.push({
+          issueKey: issue.key,
+          issueName: issue.name,
+          datetime: w.started,
+          date,
+          seconds: secs,
+          hours: Number((secs / 3600).toFixed(2)),
+        });
 
         const current = perIssue.get(issue.key) || {
           key: issue.key,
@@ -160,12 +169,17 @@ async function computeWorklogSummary({ dateFrom, dateTo, projectKey }) {
       hours: Number((seconds / 3600).toFixed(2)),
     }));
 
+  worklogEntries.sort((a, b) =>
+    new Date(a.datetime).getTime() - new Date(b.datetime).getTime()
+  );
+
   return {
     range: { from: dateFrom, to: dateTo },
     issueCount: issues.length,
     totalSeconds,
     totalHours: Number((totalSeconds / 3600).toFixed(2)),
     perDay,
+    worklogEntries,
     perIssue: perIssueSorted,
   };
 }
